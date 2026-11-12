@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Adventure World — Boss Update</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#10182b;color:white;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}
+.game{width:950px;max-width:100%;text-align:center}
+h1{font-size:clamp(27px,5vw,40px);color:#75ffae;margin-bottom:14px;text-shadow:0 0 15px #38ff9c}
+.stats{display:flex;justify-content:space-around;gap:8px;flex-wrap:wrap;padding:13px;background:#202c44;border-radius:12px 12px 0 0;font-size:17px}
+canvas{width:100%;display:block;background:#87ceeb;border:3px solid #75ffae;touch-action:none}
+.controls{background:#202c44;padding:13px;border-radius:0 0 12px 12px;color:#ddd}
+button{padding:11px 22px;margin:8px 5px;border:0;border-radius:8px;background:#75ffae;color:#10251a;font-size:15px;font-weight:bold;cursor:pointer}
+button:hover{background:white}
+.note{font-size:13px;color:#aebbd0;margin-top:5px}
+.mobile{display:none;justify-content:space-between;gap:10px;margin-top:10px}
+.mobile button{flex:1;font-size:20px;touch-action:none}
+@media(max-width:650px){.mobile{display:flex}.stats{font-size:14px}}
+</style>
+</head>
+<body>
+<div class="game">
+<h1>🌍 ADVENTURE WORLD</h1>
+<div class="stats">
+<span>🪙 Монеты: <b id="coins">0</b></span>
+<span>❤️ Жизни: <b id="lives">3</b></span>
+<span>🏆 Уровень: <b id="level">1</b></span>
+<span>👾 Босс: <b id="bossStatus">—</b></span>
+</div>
+<canvas id="game" width="900" height="450"></canvas>
+<div class="controls">
+<p>A / D или ← → — движение | SPACE / W / ↑ — прыжок | X — атака</p>
+<button onclick="restart()">ЗАНОВО</button>
+<div class="mobile">
+<button id="leftBtn">◀</button>
+<button id="jumpBtn">⬆</button>
+<button id="attackBtn">⚔</button>
+<button id="rightBtn">▶</button>
+</div>
+<p class="note">Совет: атакуй босса клавишей X, когда стоишь рядом с ним.</p>
+</div>
+</div>
+<script>
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
+const W=canvas.width,H=canvas.height;
+let player,platforms,coins,enemies,camera,score,lives,level,gameState,keys={};
+let boss=null,attackTimer=0,attackEffect=0,levelMessage=0;
+const levels=[
+ {name:"Зелёные холмы",end:2200,theme:"day",
+ platforms:[[0,400,500,50],[570,400,350,50],[1000,400,400,50],[1480,400,350,50],[1900,400,500,50],[230,320,130,20],[700,310,140,20],[1100,310,140,20],[1570,300,130,20],[1900,310,150,20]],
+ coins:[[270,280],[750,270],[1150,270],[1620,260],[1960,270],[850,360],[1300,360],[1750,360]],
+ enemies:[[650,370],[1200,370],[1700,370]]},
+ {name:"Каменистая долина",end:2600,theme:"sunset",
+ platforms:[[0,400,400,50],[500,400,350,50],[950,400,300,50],[1350,400,400,50],[1850,400,350,50],[2300,400,400,50],[250,310,130,20],[650,290,130,20],[1050,300,130,20],[1450,280,130,20],[1950,300,130,20],[2400,280,130,20]],
+ coins:[[290,270],[690,250],[1090,260],[1490,240],[1990,260],[2440,240]],
+ enemies:[[550,370],[1100,370],[1500,370],[2050,370]]},
+ {name:"Тёмный лес",end:3000,theme:"forest",
+ platforms:[[0,400,350,50],[450,400,350,50],[900,400,300,50],[1300,400,350,50],[1750,400,350,50],[2200,400,350,50],[2650,400,500,50],[200,300,130,20],[600,280,130,20],[1050,270,130,20],[1450,280,130,20],[1900,270,130,20],[2350,260,130,20],[2750,280,130,20]],
+ coins:[[240,260],[640,240],[1090,230],[1490,240],[1940,230],[2390,220],[2790,240]],
+ enemies:[[500,370],[1000,370],[1500,370],[2000,370],[2450,370]]}
+];
+function setupLevel(){
+ const d=levels[level-1];
+ platforms=d.platforms.map(p=>[...p]);
+ coins=d.coins.map(c=>({x:c[0],y:c[1],taken:false}));
+ enemies=d.enemies.map(e=>({x:e[0],y:e[1],start:e[0],direction:1,alive:true}));
+ player={x:50,y:330,w:32,h:48,vx:0,vy:0,grounded:false,face:1,invuln:0};
+ camera=0;boss=null;attackTimer=0;attackEffect=0;gameState="playing";levelMessage=90;
+ updateStats();
+}
+function updateStats(){
+ document.getElementById("coins").textContent=score;
+ document.getElementById("lives").textContent=lives;
+ document.getElementById("level").textContent=level;
+ document.getElementById("bossStatus").textContent=boss?boss.hp+" ❤️":"—";
+}
+function restart(){score=0;lives=3;level=1;setupLevel();}
+function hit(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+function jump(){if(player.grounded&&gameState==="playing"){player.vy=-13;player.grounded=false;}}
+function attack(){
+ if(gameState!=="playing"||attackTimer>0)return;
+ attackTimer=22;attackEffect=10;
+ const range={x:player.face===1?player.x+player.w:player.x-48,y:player.y+5,w:48,h:38};
+ if(boss&&boss.hp>0&&hit(range,{x:boss.x,y:boss.y,w:boss.w,h:boss.h})){
+  boss.hp--;boss.flash=8;updateStats();
+  if(boss.hp<=0){score+=20;updateStats();gameState="won";}
+ }
+ for(const e of enemies){
+  if(e.alive&&hit(range,{x:e.x,y:e.y,w:32,h:30})){e.alive=false;score+=2;updateStats();}
+ }
+}
+document.addEventListener("keydown",e=>{
+ keys[e.code]=true;
+ if(["Space","ArrowUp","ArrowLeft","ArrowRight"].includes(e.code))e.preventDefault();
+ if(["Space","ArrowUp","KeyW"].includes(e.code)){if(gameState==="playing")jump();else if(gameState==="won"||gameState==="lost")restart();}
+ if(e.code==="KeyX")attack();
+});
+document.addEventListener("keyup",e=>keys[e.code]=false);
+function bindHold(id,code){
+ const el=document.getElementById(id);
+ el.addEventListener("pointerdown",e=>{e.preventDefault();keys[code]=true;});
+ ["pointerup","pointerleave","pointercancel"].forEach(ev=>el.addEventListener(ev,()=>keys[code]=false));
+}
+bindHold("leftBtn","ArrowLeft");bindHold("rightBtn","ArrowRight");
+document.getElementById("jumpBtn").addEventListener("pointerdown",e=>{e.preventDefault();jump();});
+document.getElementById("attackBtn").addEventListener("pointerdown",e=>{e.preventDefault();attack();});
+function loseLife(){
+ if(player.invuln>0)return;
+ lives--;updateStats();
+ if(lives<=0){gameState="lost";return;}
+ player.x=Math.max(0,camera+45);player.y=320;player.vx=0;player.vy=0;player.invuln=90;
+}
+function update(){
+ if(gameState!=="playing")return;
+ if(levelMessage>0)levelMessage--;
+ if(attackTimer>0)attackTimer--;
+ if(attackEffect>0)attackEffect--;
+ if(player.invuln>0)player.invuln--;
+ player.vx=0;
+ if(keys.ArrowRight||keys.KeyD){player.vx=5;player.face=1;}
+ if(keys.ArrowLeft||keys.KeyA){player.vx=-5;player.face=-1;}
+ player.x=Math.max(0,player.x+player.vx);
+ player.vy=Math.min(14,player.vy+0.65);
+ const oldY=player.y;player.y+=player.vy;player.grounded=false;
+ for(const p of platforms){
+  const [x,y,w,h]=p;
+  if(player.x<x+w&&player.x+player.w>x&&player.y<y+h&&player.y+player.h>y){
+   if(player.vy>=0&&oldY+player.h<=y+10){player.y=y-player.h;player.vy=0;player.grounded=true;}
+  }
+ }
+ for(const c of coins){if(!c.taken&&hit(player,{x:c.x-12,y:c.y-12,w:24,h:24})){c.taken=true;score++;updateStats();}}
+ for(const e of enemies){
+  if(!e.alive)continue;
+  e.x+=e.direction*1.5;
+  if(e.x>e.start+65||e.x<e.start-65)e.direction*=-1;
+  if(hit(player,{x:e.x,y:e.y,w:32,h:30})){
+   if(player.vy>1&&player.y+player.h<e.y+20){e.alive=false;player.vy=-8;score+=2;updateStats();}
+   else loseLife();
+  }
+ }
+ if(player.y>H+100){loseLife();}
+ // Boss appears near the end of the final level.
+ if(level===3&&player.x>levels[2].end-470&&!boss){
+  boss={x:levels[2].end-190,y:320,w:78,h:80,hp:6,maxHp:6,dir:-1,flash:0};
+  updateStats();
+ }
+ if(boss&&boss.hp>0){
+  if(boss.flash>0)boss.flash--;
+  boss.x+=boss.dir*1.25;
+  if(boss.x<levels[2].end-280||boss.x>levels[2].end-100)boss.dir*=-1;
+  if(hit(player,{x:boss.x,y:boss.y,w:boss.w,h:boss.h})){
+   if(player.vy>1&&player.y+player.h<boss.y+22){player.vy=-9;attack();}else loseLife();
+  }
+ }
+ camera=Math.max(0,Math.min(player.x-300,levels[level-1].end-450));
+ if(level<3&&player.x>levels[level-1].end){level++;setupLevel();}
+ if(level===3&&player.x>levels[2].end&&(!boss||boss.hp>0)){player.x=levels[2].end; }
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ const theme=levels[level-1].theme;
+ let sky=ctx.createLinearGradient(0,0,0,H);
+ if(theme==="forest"){sky.addColorStop(0,"#102d35");sky.addColorStop(1,"#315b43");}
+ else if(theme==="sunset"){sky.addColorStop(0,"#ffad75");sky.addColorStop(1,"#6c6a9d");}
+ else{sky.addColorStop(0,"#65c9ff");sky.addColorStop(1,"#d2f5ff");}
+ ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+ if(theme!=="forest"){ctx.fillStyle="#fff3a3";ctx.beginPath();ctx.arc(750,85,38,0,Math.PI*2);ctx.fill();}
+ // Distant scenery
+ for(let i=0;i<9;i++){
+  const x=((i*150-camera*0.22)%1100+1100)%1100-100;
+  if(theme==="forest"){
+   ctx.fillStyle="#173e32";ctx.fillRect(x+22,190,18,210);
+   ctx.fillStyle="#1c6847";ctx.beginPath();ctx.arc(x+30,185,58,0,Math.PI*2);ctx.fill();
+  }else{
+   ctx.fillStyle=theme==="sunset"?"#9a7890":"#78bd9b";
+   ctx.beginPath();ctx.moveTo(x-30,400);ctx.lineTo(x+50,220+(i%3)*35);ctx.lineTo(x+130,400);ctx.fill();
+  }
+ }
+ ctx.save();ctx.translate(-camera,0);
+ for(const p of platforms){
+  const [x,y,w,h]=p;ctx.fillStyle=theme==="forest"?"#493c2e":"#795239";ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=theme==="forest"?"#287345":"#48b94f";ctx.fillRect(x,y,w,9);
+  ctx.fillStyle="#a8784d";for(let i=0;i<w;i+=35)ctx.fillRect(x+i,y+18,15,5);
+ }
+ for(const c of coins){if(c.taken)continue;ctx.fillStyle="#ffd700";ctx.beginPath();ctx.arc(c.x,c.y,11,0,Math.PI*2);ctx.fill();ctx.strokeStyle="#ff9d00";ctx.lineWidth=3;ctx.stroke();}
+ for(const e of enemies){if(!e.alive)continue;ctx.fillStyle="#9c35c9";ctx.fillRect(e.x,e.y,32,30);ctx.fillStyle="white";ctx.fillRect(e.x+6,e.y+7,7,7);ctx.fillRect(e.x+20,e.y+7,7,7);ctx.fillStyle="#222";ctx.fillRect(e.x+9,e.y+9,3,3);ctx.fillRect(e.x+23,e.y+9,3,3);}
+ // Boss
+ if(boss&&boss.hp>0){
+  ctx.fillStyle=boss.flash>0?"#fff":"#7129a8";ctx.fillRect(boss.x,boss.y,boss.w,boss.h);
+  ctx.fillStyle="#d83d68";ctx.fillRect(boss.x+8,boss.y+8, boss.w-16,15);
+  ctx.fillStyle="#fff";ctx.fillRect(boss.x+17,boss.y+28,12,12);ctx.fillRect(boss.x+49,boss.y+28,12,12);
+  ctx.fillStyle="#222";ctx.fillRect(boss.x+21,boss.y+32,5,5);ctx.fillRect(boss.x+53,boss.y+32,5,5);
+  ctx.fillStyle="#222";ctx.fillRect(boss.x+15,boss.y-17,48,7);
+  ctx.fillStyle="#ff365d";ctx.fillRect(boss.x+15,boss.y-17,48*(boss.hp/boss.maxHp),7);
+  ctx.fillStyle="white";ctx.font="14px Arial";ctx.fillText("BOSS",boss.x+20,boss.y-24);
+ }
+ // Finish flag
+ const end=levels[level-1].end;ctx.fillStyle="#333";ctx.fillRect(end,280,5,120);ctx.fillStyle="#ff365d";ctx.beginPath();ctx.moveTo(end+5,280);ctx.lineTo(end+55,300);ctx.lineTo(end+5,320);ctx.fill();
+ // Player
+ if(player.invuln===0||Math.floor(player.invuln/6)%2===0){
+  ctx.fillStyle="#ffbd69";ctx.fillRect(player.x,player.y,player.w,player.h);
+  ctx.fillStyle="#2975ff";ctx.fillRect(player.x,player.y+25,player.w,23);
+  ctx.fillStyle="white";ctx.fillRect(player.x+(player.face===1?19:6),player.y+9,7,8);
+  ctx.fillStyle="#222";ctx.fillRect(player.x+(player.face===1?23:8),player.y+11,3,4);
+ }
+ if(attackEffect>0){
+  ctx.strokeStyle="#fff36b";ctx.lineWidth=6;ctx.beginPath();
+  const ax=player.face===1?player.x+player.w:player.x;
+  ctx.arc(ax,player.y+25,27,player.face===1?-1.1:Math.PI-1.1,player.face===1?1.1:Math.PI+1.1);
+  ctx.stroke();
+ }
+ ctx.restore();
+ if(levelMessage>0){ctx.fillStyle="rgba(0,0,0,.35)";ctx.fillRect(0,0,W,45);ctx.fillStyle="white";ctx.font="bold 22px Arial";ctx.textAlign="center";ctx.fillText("Уровень "+level+": "+levels[level-1].name,W/2,30);ctx.textAlign="left";}
+ if(gameState==="lost"||gameState==="won"){
+  ctx.fillStyle="rgba(0,0,0,.78)";ctx.fillRect(0,0,W,H);ctx.textAlign="center";
+  ctx.fillStyle=gameState==="won"?"#75ffae":"#ff5252";ctx.font="bold 48px Arial";
+  ctx.fillText(gameState==="won"?"ПОБЕДА!":"ИГРА ОКОНЧЕНА",W/2,185);
+  ctx.fillStyle="white";ctx.font="23px Arial";ctx.fillText("Монет собрано: "+score,W/2,235);
+  ctx.fillText("Нажми SPACE или «Заново»",W/2,280);ctx.textAlign="left";
+ }
+}
+function loop(){update();draw();requestAnimationFrame(loop);}
+restart();loop();
+</script>
+</body>
+</html>
